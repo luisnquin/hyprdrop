@@ -95,6 +95,7 @@ impl LocalCLient for Client {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 enum Window<'a> {
     /// Normal window that only contains the WindowIdentifier Enum
@@ -105,6 +106,7 @@ enum Window<'a> {
     Special((Option<WindowIdentifier<'a>>, Option<Address>)),
 }
 
+#[allow(dead_code)]
 impl<'a> Window<'a> {
     /// Extract the identifier from Window Enum
     fn get_window_identifier(&self) -> Option<WindowIdentifier> {
@@ -153,10 +155,10 @@ impl Cli {
         }
     }
     /// Silently move the window to the special workspace.
-    fn move_to_workspace_silent(&self, window_identifier: &Window) {
+    fn move_to_workspace_silent(&self, process_id: u32) {
         let res = Dispatch::call(DispatchType::MoveToWorkspaceSilent(
             WorkspaceIdentifierWithSpecial::Special(Some(SPECIAL_WORKSPACE)),
-            window_identifier.get_window_identifier(),
+            Some(WindowIdentifier::ProcessId(process_id)),
         ));
         match res {
             Ok(_) => debug!(
@@ -176,11 +178,9 @@ impl Cli {
     }
     /// Move the window to the active workspace.
     fn move_to_workspace(&self, process_id: u32, workspace_id: i32) {
-        let window = Window::Normal(Some(WindowIdentifier::ProcessId(process_id)));
-
         let res = Dispatch::call(DispatchType::MoveToWorkspace(
             WorkspaceIdentifierWithSpecial::Id(workspace_id),
-            window.get_window_identifier(),
+            Some(WindowIdentifier::ProcessId(process_id)),
         ));
         match res {
             Ok(_) => debug!(
@@ -342,6 +342,8 @@ fn main() {
         .find(|client| client.check_title_or_class_or_address(&cli, &window))
     {
         Some(client) => {
+            let process_id = u32::try_from(client.pid).unwrap();
+
             // Case 1: There is a client with the same identifier in a different workspace
             // Move from special workspace or another workspace to the current one (show it)
             if client.workspace.id != active_workspace_id {
@@ -350,10 +352,8 @@ fn main() {
                     // NOTE: It seems weird to first move the client to the special workspace and then
                     // moving it to the active workspace but this is the only way to prevent
                     // the freezing when retrieving from another non-special workspace.
-                    cli.move_to_workspace_silent(&window);
+                    cli.move_to_workspace_silent(process_id);
                 }
-
-                let process_id = u32::try_from(client.pid).unwrap();
 
                 // Moving to current active workspace
                 cli.move_to_workspace(process_id, active_workspace_id);
@@ -375,7 +375,7 @@ fn main() {
             } else {
                 // Case 2: There is a client with the same identifier in the current workspace.
                 // Move to the special workspace (hide it)
-                cli.move_to_workspace_silent(&window);
+                cli.move_to_workspace_silent(process_id);
             }
         }
         None => {
