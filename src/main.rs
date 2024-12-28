@@ -175,10 +175,12 @@ impl Cli {
         }
     }
     /// Move the window to the active workspace.
-    fn move_to_workspace(&self, window_identifier: &Window, workspace_id: i32) {
+    fn move_to_workspace(&self, process_id: u32, workspace_id: i32) {
+        let window = Window::Normal(Some(WindowIdentifier::ProcessId(process_id)));
+
         let res = Dispatch::call(DispatchType::MoveToWorkspace(
             WorkspaceIdentifierWithSpecial::Id(workspace_id),
-            window_identifier.get_window_identifier(),
+            window.get_window_identifier(),
         ));
         match res {
             Ok(_) => debug!(
@@ -351,8 +353,10 @@ fn main() {
                     cli.move_to_workspace_silent(&window);
                 }
 
+                let process_id = u32::try_from(client.pid).unwrap();
+
                 // Moving to current active workspace
-                cli.move_to_workspace(&window, active_workspace_id);
+                cli.move_to_workspace(process_id, active_workspace_id);
 
                 // Bring to the front the current window. This fix the issue in case there are two
                 // floating windows in the same workspace
