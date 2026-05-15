@@ -1,9 +1,12 @@
 use hyprland::{
     data::{Client, Clients, Workspace},
-    dispatch::{Dispatch, DispatchType, WindowIdentifier, WorkspaceIdentifierWithSpecial},
+    dispatch::{DispatchType, WindowIdentifier, WorkspaceIdentifierWithSpecial},
     shared::{Address, HyprData, HyprDataActive},
 };
+
+mod hypr055;
 use log::{debug, error, info};
+use regex::Regex;
 use simple_logger::SimpleLogger;
 use structopt::StructOpt;
 use time::macros::format_description;
@@ -50,7 +53,7 @@ struct Cli {
 
 /// Send a notification with notify-send.
 fn notify(msg: &str) {
-    if let Err(e) = Dispatch::call(DispatchType::Exec(&format!("notify-send {}", msg))) {
+    if let Err(e) = hypr055::dispatch_compat(DispatchType::Exec(&format!("notify-send {}", msg))) {
         error!("Failed to notify: {}", e);
     }
 }
@@ -87,9 +90,10 @@ impl LocalCLient for Client {
             "konsole" => self.title.contains(&cli.identifier),
             // TODO: Add here other commands
 
+            // CHECK CLASS (same pattern as IPC / `to_pattern_match`)
+            "alacritty" | "ghostty" | "kitty" | "wezterm" => cli.class_matches_pattern(&self.class),
+
             // CHECK CLASS
-            // Alacritty, Kitty and Wezterm all accept class name as parameter, and is assumed for
-            // now to be the same for most applications
             _ => self.class == cli.identifier,
         }
     }
@@ -107,7 +111,7 @@ enum Window<'a> {
 
 impl<'a> Window<'a> {
     /// Extract the identifier from Window Enum
-    fn get_window_identifier(&self) -> Option<WindowIdentifier> {
+    fn get_window_identifier(&self) -> Option<WindowIdentifier<'_>> {
         match self {
             Window::Normal(identifier) => identifier.as_ref().cloned(),
             Window::Special((identifier, _)) => identifier.as_ref().cloned(),
@@ -127,8 +131,14 @@ impl Cli {
     fn to_pattern_match(&self) -> String {
         match self.cmd.as_str() {
             "konsole" => format!("{} — Konsole", self.identifier),
-            _ => format!("^{}$", self.identifier),
+            _ => format!("^{}$", regex::escape(&self.identifier)),
         }
+    }
+
+    fn class_matches_pattern(&self, class: &str) -> bool {
+        Regex::new(&self.to_pattern_match())
+            .map(|re| re.is_match(class))
+            .unwrap_or(false)
     }
     /// Get the window identifier
     fn get_window_identifier<'a>(
@@ -137,7 +147,7 @@ impl Cli {
         pattern_match: &'a str,
     ) -> Window<'a> {
         match self.cmd.as_str() {
-            "alacritty" | "kitty" | "wezterm" => Window::Normal(Some(
+            "alacritty" | "ghostty" | "kitty" | "wezterm" => Window::Normal(Some(
                 WindowIdentifier::ClassRegularExpression(pattern_match),
             )),
             "foot" => Window::Normal(Some(WindowIdentifier::Title(pattern_match))),
@@ -154,7 +164,7 @@ impl Cli {
     }
     /// Silently move the window to the special workspace.
     fn move_to_workspace_silent(&self, window_identifier: &Window) {
-        let res = Dispatch::call(DispatchType::MoveToWorkspaceSilent(
+        let res = hypr055::dispatch_compat(DispatchType::MoveToWorkspaceSilent(
             WorkspaceIdentifierWithSpecial::Special(Some(SPECIAL_WORKSPACE)),
             window_identifier.get_window_identifier(),
         ));
@@ -178,7 +188,7 @@ impl Cli {
     fn move_to_workspace(&self, process_id: u32, workspace_id: i32) {
         let window = Window::Normal(Some(WindowIdentifier::ProcessId(process_id)));
 
-        let res = Dispatch::call(DispatchType::MoveToWorkspace(
+        let res = hypr055::dispatch_compat(DispatchType::MoveToWorkspace(
             WorkspaceIdentifierWithSpecial::Id(workspace_id),
             window.get_window_identifier(),
         ));
@@ -211,7 +221,7 @@ impl Cli {
                 // let cmd_args = args.split(',').collect::<Vec<&str>>().join(" ");
                 let cmd_args = self.split_args();
                 return match self.cmd.as_str() {
-                    "alacritty" | "kitty" => {
+                    "alacritty" | "ghostty" | "kitty" => {
                         format!(
                             "{}{} --class={} -e {}",
                             cmd_envs, self.cmd, self.identifier, &cmd_args
@@ -248,7 +258,7 @@ impl Cli {
         }
         // No arguments given
         match self.cmd.as_str() {
-            "alacritty" | "kitty" => {
+            "alacritty" | "ghostty" | "kitty" => {
                 format!("{}{} --class={}", cmd_envs, self.cmd, self.identifier)
             }
             "foot" => format!(
@@ -362,7 +372,7 @@ fn main() {
                 // floating windows in the same workspace
                 // NOTE: BringActiveToTop will be deprecated in the future by AlterZOrder.
                 // NOTE: There is no way to determine if the focused window is already on the front.
-                let res = Dispatch::call(DispatchType::BringActiveToTop);
+                let res = hypr055::dispatch_compat(DispatchType::BringActiveToTop);
                 match res {
                     Ok(_) => debug!("Active window brought to the top"),
                     Err(e) => {
@@ -390,7 +400,7 @@ fn main() {
                 },
                 &parsed_args
             );
-            let res = Dispatch::call(DispatchType::Exec(&final_cmd));
+            let res = hypr055::dispatch_compat(DispatchType::Exec(&final_cmd));
             match res {
                 Ok(_) => {
                     debug!(
