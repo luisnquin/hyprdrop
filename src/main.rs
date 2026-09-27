@@ -281,17 +281,25 @@ impl Cli {
         }
     }
     /// Move the window to the active workspace.
-    fn move_to_workspace(&self, process_id: u32, workspace_id: i32) {
+    fn move_to_workspace(&self, process_id: u32, workspace: &Workspace) {
         let window = Window::Normal(Some(WindowIdentifier::ProcessId(process_id)));
 
+        // Named workspaces get negative ids that Hyprland does not resolve back to
+        // them, so they must be addressed by name.
+        let target = if workspace.id < 0 {
+            WorkspaceIdentifierWithSpecial::Name(&workspace.name)
+        } else {
+            WorkspaceIdentifierWithSpecial::Id(workspace.id)
+        };
+
         let res = hypr055::dispatch_compat(DispatchType::MoveToWorkspace(
-            WorkspaceIdentifierWithSpecial::Id(workspace_id),
+            target,
             window.get_window_identifier(),
         ));
         match res {
             Ok(_) => debug!(
-                "Moved {}:{} to active workspace id: {}",
-                self.cmd, self.identifier, workspace_id
+                "Moved {}:{} to active workspace: {}",
+                self.cmd, self.identifier, workspace.name
             ),
             Err(e) => {
                 handle_error(
@@ -442,7 +450,8 @@ fn main() {
     let window = cli.get_window_identifier(&clients, &regex_match);
     debug!("Window identifier: {:?}", window);
     // let addresses = get_addresses_file();
-    let active_workspace_id = Workspace::get_active().unwrap().id;
+    let active_workspace = Workspace::get_active().unwrap();
+    let active_workspace_id = active_workspace.id;
     let solo_selector = if cli.solo {
         cli.solo_selector(&clients)
     } else {
@@ -470,7 +479,7 @@ fn main() {
                 let process_id = u32::try_from(client.pid).unwrap();
 
                 // Moving to current active workspace
-                cli.move_to_workspace(process_id, active_workspace_id);
+                cli.move_to_workspace(process_id, &active_workspace);
 
                 // Bring to the front the current window. This fix the issue in case there are two
                 // floating windows in the same workspace
