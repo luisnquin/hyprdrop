@@ -1,10 +1,11 @@
 use hyprland::{
-    data::{Client, Clients, Workspace},
+    data::{Client, Workspace},
     dispatch::{DispatchType, WindowIdentifier, WorkspaceIdentifierWithSpecial},
-    shared::{Address, HyprData, HyprDataActive},
+    shared::Address,
 };
 
 mod hypr055;
+mod hypr056;
 use log::{debug, error, info};
 use regex::Regex;
 use simple_logger::SimpleLogger;
@@ -265,7 +266,7 @@ impl Cli {
     }
     /// Serialize how this window is identified so it survives in the solo state
     /// file. Mirrors the app-specific matching of `get_window_identifier`.
-    fn solo_selector(&self, clients: &Clients) -> Option<String> {
+    fn solo_selector(&self, clients: &[Client]) -> Option<String> {
         match self.cmd.as_str() {
             "alacritty" | "ghostty" | "kitty" | "wezterm" => {
                 Some(format!("class:{}", self.to_pattern_match()))
@@ -281,7 +282,7 @@ impl Cli {
     /// Get the window identifier
     fn get_window_identifier<'a>(
         &'a self,
-        clients: &'a Clients,
+        clients: &'a [Client],
         pattern_match: &'a str,
     ) -> Window<'a> {
         match self.cmd.as_str() {
@@ -425,7 +426,7 @@ impl Cli {
     /// NOTE: This function is only required by gnome-terminal
     fn get_window_identifier_by_address<'a>(
         &self,
-        clients: &'a Clients,
+        clients: &'a [Client],
         name_matching: &'a str,
     ) -> Window<'a> {
         clients
@@ -487,12 +488,12 @@ fn main() {
         .unwrap();
 
     let regex_match = cli.to_pattern_match();
-    let clients = Clients::get().unwrap();
+    let clients = hypr056::clients().unwrap();
     debug!("Clients: {:#?}", clients);
     let window = cli.get_window_identifier(&clients, &regex_match);
     debug!("Window identifier: {:?}", window);
     // let addresses = get_addresses_file();
-    let active_workspace = Workspace::get_active().unwrap();
+    let active_workspace = hypr056::active_workspace().unwrap();
     let active_workspace_id = active_workspace.id;
     let solo_scope = match cli.solo_scope.as_str() {
         "monitor" => Some(active_workspace.monitor.as_str()),

@@ -228,6 +228,8 @@ dependencies = [
  "hyprland",
  "log",
  "regex",
+ "serde",
+ "serde_json",
  "simple_logger",
  "structopt",
  "time",
