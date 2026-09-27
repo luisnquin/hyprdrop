@@ -57,6 +57,14 @@ struct Cli {
         help = "Hide the previously shown --solo dropdown before showing this one, keeping at most one solo dropdown visible at a time."
     )]
     solo: bool,
+
+    #[structopt(
+        long,
+        default_value = "global",
+        possible_values = &["global", "monitor"],
+        help = "Where --solo keeps at most one dropdown visible: across all monitors, or per monitor."
+    )]
+    solo_scope: String,
 }
 
 /// Send a notification with notify-send.
@@ -74,8 +82,8 @@ fn handle_error(e: &str, debug: bool) {
     };
 }
 
-/// Path of the file tracking which --solo dropdown is currently shown. Lives in
-/// the runtime dir so it is wiped on logout and never outlives the session.
+/// Path of the file tracking which --solo dropdowns are shown. Lives in the
+/// runtime dir so it is wiped on logout and never outlives the session.
 fn solo_state_path() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -83,28 +91,62 @@ fn solo_state_path() -> PathBuf {
         .join("hyprdrop.solo")
 }
 
-/// Read the selector of the currently shown --solo dropdown, if any.
-fn read_solo_state() -> Option<String> {
+type SoloEntry = (Option<String>, String);
+
+/// A bare `<selector>` line is a global entry, the only format written before
+/// --solo-scope existed.
+fn read_solo_state() -> Vec<SoloEntry> {
     std::fs::read_to_string(solo_state_path())
-        .ok()
-        .map(|content| content.trim().to_string())
-        .filter(|content| !content.is_empty())
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| match line.split_once('\t') {
+            Some((monitor, selector)) => (Some(monitor.to_string()), selector.to_string()),
+            None => (None, line.to_string()),
+        })
+        .collect()
 }
 
-/// Record the selector of the dropdown now being shown.
-fn write_solo_state(selector: &str, debug: bool) {
-    if let Err(e) = std::fs::write(solo_state_path(), selector) {
+fn write_solo_state(entries: &[SoloEntry], debug: bool) {
+    let res = if entries.is_empty() {
+        match std::fs::remove_file(solo_state_path()) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            res => res,
+        }
+    } else {
+        let content: String = entries
+            .iter()
+            .map(|(monitor, selector)| match monitor {
+                Some(monitor) => format!("{}\t{}\n", monitor, selector),
+                None => format!("{}\n", selector),
+            })
+            .collect();
+        std::fs::write(solo_state_path(), content)
+    };
+    if let Err(e) = res {
         handle_error(&format!("Failed to persist solo state: {}", e), debug);
     }
 }
 
-/// Forget the currently shown --solo dropdown.
-fn clear_solo_state(debug: bool) {
-    match std::fs::remove_file(solo_state_path()) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => handle_error(&format!("Failed to clear solo state: {}", e), debug),
+fn solo_clashes(scope: Option<&str>, entry: &SoloEntry) -> bool {
+    match (scope, entry.0.as_deref()) {
+        (Some(monitor), Some(shown_on)) => monitor == shown_on,
+        _ => true,
     }
+}
+
+fn forget_solo(selector: &str, debug: bool) {
+    let mut entries = read_solo_state();
+    entries.retain(|(_, shown)| shown != selector);
+    write_solo_state(&entries, debug);
+}
+
+fn remember_solo(scope: Option<&str>, selector: &str, debug: bool) {
+    let mut entries = read_solo_state();
+    entries.retain(|entry| !solo_clashes(scope, entry) && entry.1 != selector);
+    entries.push((scope.map(str::to_string), selector.to_string()));
+    write_solo_state(&entries, debug);
 }
 
 /// Rebuild a window identifier from a serialized selector (`class:`, `title:` or
@@ -136,13 +178,13 @@ fn stash_solo_selector(selector: &str, debug: bool) {
     }
 }
 
-/// Before showing a --solo dropdown, hide whichever solo dropdown was last shown
-/// (unless it is this one). Stashing an already-hidden or absent window is a no-op.
-fn evict_previous_solo(current_selector: Option<&str>, debug: bool) {
-    if let Some(previous) = read_solo_state() {
-        if Some(previous.as_str()) != current_selector {
-            debug!("Evicting previous solo dropdown: {}", previous);
-            stash_solo_selector(&previous, debug);
+/// Before showing a --solo dropdown, hide every other solo dropdown it clashes
+/// with under `scope`. Stashing an already-hidden or absent window is a no-op.
+fn evict_previous_solo(scope: Option<&str>, current_selector: Option<&str>, debug: bool) {
+    for entry in read_solo_state() {
+        if solo_clashes(scope, &entry) && Some(entry.1.as_str()) != current_selector {
+            debug!("Evicting previous solo dropdown: {}", entry.1);
+            stash_solo_selector(&entry.1, debug);
         }
     }
 }
@@ -452,6 +494,10 @@ fn main() {
     // let addresses = get_addresses_file();
     let active_workspace = Workspace::get_active().unwrap();
     let active_workspace_id = active_workspace.id;
+    let solo_scope = match cli.solo_scope.as_str() {
+        "monitor" => Some(active_workspace.monitor.as_str()),
+        _ => None,
+    };
     let solo_selector = if cli.solo {
         cli.solo_selector(&clients)
     } else {
@@ -466,7 +512,7 @@ fn main() {
             // Move from special workspace or another workspace to the current one (show it)
             if client.workspace.id != active_workspace_id {
                 if cli.solo {
-                    evict_previous_solo(solo_selector.as_deref(), cli.debug);
+                    evict_previous_solo(solo_scope, solo_selector.as_deref(), cli.debug);
                 }
                 // Avoid moving to the special workspace if it's already there
                 if client.workspace.name != SPECIAL_WORKSPACE {
@@ -497,22 +543,22 @@ fn main() {
                 }
 
                 if let Some(selector) = &solo_selector {
-                    write_solo_state(selector, cli.debug);
+                    remember_solo(solo_scope, selector, cli.debug);
                 }
             } else {
                 // Case 2: There is a client with the same identifier in the current workspace.
                 // Move to the special workspace (hide it)
                 cli.move_to_workspace_silent(&window);
 
-                if cli.solo && read_solo_state().as_deref() == solo_selector.as_deref() {
-                    clear_solo_state(cli.debug);
+                if let Some(selector) = &solo_selector {
+                    forget_solo(selector, cli.debug);
                 }
             }
         }
         None => {
             // Case 3: There is no client with the same identifier.
             if cli.solo {
-                evict_previous_solo(solo_selector.as_deref(), cli.debug);
+                evict_previous_solo(solo_scope, solo_selector.as_deref(), cli.debug);
             }
             let parsed_args = cli.arrange_execution_cmd();
             let final_cmd = format!(
@@ -538,7 +584,7 @@ fn main() {
             }
 
             if let Some(selector) = &solo_selector {
-                write_solo_state(selector, cli.debug);
+                remember_solo(solo_scope, selector, cli.debug);
             }
         }
     };
